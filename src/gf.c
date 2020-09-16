@@ -2756,11 +2756,16 @@ static jl_value_t *ml_matches(jl_methtable_t *mt, int offs,
         }
         //   - it may even dominate some choices that are not subtypes!
         //     move those into the subtype group, where we're filter them out shortly after
-        //     (and avoid potentially reporting these as an ambiguity)
-        if (!all_subtypes && minmax != NULL && !minmax_ambig) {
+        //     (potentially avoiding reporting these as an ambiguity, and
+        //     potentially allowing us to hit the fast path)
+        //   - we could always check here if *any* FULLY_COVERS method is
+        //     more-specific (instead of just considering minmax), but that may
+        //     cost much extra and is less likely to help us hit a fast path
+        //     (we will look for this later, when we compute ambig_groupid, for
+        //     correctness)
+        if (!all_subtypes && minmax != NULL) {
             jl_method_t *minmaxm = minmax->method;
-            if (!include_ambiguous)
-                all_subtypes = 1;
+            all_subtypes = 1;
             for (i = 0; i < len; i++) {
                 jl_method_match_t *matc = (jl_method_match_t*)jl_array_ptr_ref(env.t, i);
                 if (matc->fully_covers != FULLY_COVERS) {
@@ -2798,8 +2803,8 @@ static jl_value_t *ml_matches(jl_methtable_t *mt, int offs,
             env.matc = (jl_method_match_t*)jl_array_ptr_ref(env.t, i);
             jl_method_t *m = env.matc->method;
             int subt = env.matc->fully_covers != NOT_FULLY_COVERS;
-            if ((minmax != NULL || minmax_ambig) && !include_ambiguous && subt) {
-                continue; // already the biggest
+            if ((minmax != NULL || (minmax_ambig && !include_ambiguous)) && subt) {
+                continue; // already the biggest (skip will filter others)
             }
             for (j = 0; j < i; j++) {
                 jl_method_match_t *matc2 = (jl_method_match_t *)jl_array_ptr_ref(env.t, i - j - 1);
@@ -2814,34 +2819,6 @@ static jl_value_t *ml_matches(jl_methtable_t *mt, int offs,
                 jl_array_ptr_set(env.t, i - j, matc2);
             }
             jl_array_ptr_set(env.t, i - j, env.matc);
-        }
-        // final step to finish sort:
-        // we stopped early with just having all non-subtypes before all
-        // subtypes, but the case on the boundary might be wrongly placed:
-        // check for that now
-        if (minmax == NULL && !minmax_ambig) {
-            for (i = 0; i < len; i++) {
-                jl_method_match_t *matc = (jl_method_match_t*)jl_array_ptr_ref(env.t, i);
-                if (matc->fully_covers == FULLY_COVERS)
-                    break;
-            }
-            for (; i > 0; i--) {
-                env.matc = (jl_method_match_t*)jl_array_ptr_ref(env.t, i - 1);
-                jl_method_t *m = env.matc->method;
-                for (j = i; j < len; j++) {
-                    jl_method_match_t *matc2 = (jl_method_match_t*)jl_array_ptr_ref(env.t, j);
-                    jl_method_t *m2 = matc2->method;
-                    if (matc2->fully_covers != FULLY_COVERS)
-                        break;
-                    if (!jl_type_morespecific((jl_value_t*)m2->sig, (jl_value_t*)m->sig))
-                        break;
-                    jl_array_ptr_set(env.t, j - 1, matc2);
-                }
-                if (j == i)
-                    break;
-                env.matc->fully_covers = SENTINEL;
-                jl_array_ptr_set(env.t, j - 1, env.matc);
-            }
         }
         char *skip = (char*)alloca(len);
         memset(skip, 0, len);
